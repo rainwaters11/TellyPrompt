@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TellyPrompt</title>
+  <script id="default-script">
+    // Replace these examples with your tutorial steps.
+    const script = [
+      { action: "Open the project folder in your editor.", speak: "Let's start by opening the project so we can see the files we'll work with." },
+      { action: "Show the terminal and run the version command.", speak: "First, check that the required runtime is installed. The version number should appear in the terminal." },
+      { action: "Open the main source file.", speak: "This is the entry point. We'll make one small change here, then run it locally." },
+      { action: "Make the change and save the file.", speak: "Save the file before switching back to the terminal, so the next run picks up the new code." },
+      { action: "Run the project and show the result.", speak: "Now let's run it and confirm the output matches what we expected." },
+      { action: "Point out the final output.", speak: "That's the completed result. You can repeat these steps with your own project." }
+    ];
+  </script>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, Helvetica, sans-serif; }
+    * { box-sizing: border-box; }
+    html { background: #000; }
+    body { margin: 0; background: #000; color: #fff; }
+    .editor {
+      margin: 18px 28px;
+      padding: 14px 18px;
+      border: 1px solid #444;
+      border-radius: 8px;
+      background: #111;
+    }
+    .editor summary { cursor: pointer; font-size: 20px; font-weight: 700; }
+    .editor p { color: #bbb; line-height: 1.4; }
+    .editor textarea {
+      display: block;
+      width: 100%;
+      min-height: 260px;
+      padding: 14px;
+      resize: vertical;
+      border: 1px solid #666;
+      border-radius: 6px;
+      background: #050505;
+      color: #fff;
+      font: 16px/1.5 Consolas, Monaco, monospace;
+    }
+    .editor button {
+      margin-top: 12px;
+      padding: 10px 16px;
+      border: 1px solid #8ab4f8;
+      border-radius: 6px;
+      background: #24456c;
+      color: #fff;
+      font: 700 16px Arial, Helvetica, sans-serif;
+      cursor: pointer;
+    }
+    .editor button:hover { background: #315d90; }
+    .editor #editor-message { display: inline-block; margin-left: 12px; }
+    .editor #editor-message.error { color: #ff9b9b; }
+
+    .header, .step {
+      display: grid;
+      grid-template-columns: minmax(0, 38%) minmax(0, 62%);
+    }
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #000;
+      border-bottom: 1px solid #303030;
+      color: #aaa;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .08em;
+    }
+    .header > div, .cell { padding: 22px 28px; }
+    .header > :first-child, .step > :first-child { border-right: 1px solid #303030; }
+
+    #steps { padding: 38vh 0 45vh; }
+    .step {
+      align-items: center;
+      min-height: 116px;
+      background: transparent;
+      color: #fff;
+      opacity: .3;
+      transition: opacity 180ms ease, background-color 180ms ease;
+    }
+    .step.active { background: #202b3b; opacity: 1; }
+    .cell { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+    .action { font-size: 20px; }
+    .speak { font-size: 28px; font-weight: 500; }
+    .step.active .word { border-radius: 4px; }
+    .step.active .word.past { color: #8d98a9; }
+    .step.active .word.current {
+      padding: 2px 3px;
+      background: #ffe082;
+      color: #111;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+    .word { cursor: pointer; }
+
+    .voice-controls {
+      position: fixed;
+      left: 16px;
+      bottom: 12px;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: calc(100% - 340px);
+      padding: 6px 9px;
+      border-radius: 6px;
+      background: #111;
+      color: #bbb;
+      font-size: 13px;
+    }
+    .voice-controls.error { max-width: min(700px, calc(100% - 32px)); }
+    #voice-status { min-width: 0; overflow-wrap: anywhere; }
+    #mic-level { white-space: nowrap; color: #aad6ae; }
+    .voice-controls button {
+      padding: 6px 9px;
+      border: 1px solid #555;
+      border-radius: 5px;
+      background: #263241;
+      color: #fff;
+      cursor: pointer;
+    }
+    #export-dialog {
+      width: min(920px, 95vw);
+      max-height: 90vh;
+      padding: 22px;
+      border: 1px solid #666;
+      border-radius: 10px;
+      background: #111;
+      color: #fff;
+      font: 16px/1.45 Arial, Helvetica, sans-serif;
+    }
+    #export-dialog::backdrop { background: rgba(0, 0, 0, .82); }
+    #export-dialog h2 { margin: 0 0 8px; }
+    #export-dialog p { color: #bbb; }
+    #export-text {
+      display: block;
+      width: 100%;
+      height: min(58vh, 520px);
+      padding: 12px;
+      resize: vertical;
+      border: 1px solid #666;
+      border-radius: 6px;
+      background: #050505;
+      color: #fff;
+      font: 13px/1.4 Consolas, Monaco, monospace;
+    }
+    #export-dialog button {
+      margin: 12px 8px 0 0;
+      padding: 9px 14px;
+      border: 1px solid #888;
+      border-radius: 5px;
+      background: #263241;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    .hint {
+      position: fixed;
+      right: 16px;
+      bottom: 12px;
+      z-index: 2;
+      padding: 7px 10px;
+      border-radius: 6px;
+      background: #111;
+      color: #aaa;
+      font-size: 13px;
+    }
+    @media (max-width: 650px) {
+      .editor { margin: 12px 14px; }
+      .header > div, .cell { padding: 18px 14px; }
+      .action { font-size: 20px; }
+      .speak { font-size: 24px; }
+      .voice-controls { bottom: 42px; max-width: calc(100% - 32px); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .step { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <details class="editor" id="editor" open>
+    <summary>Edit or paste your script</summary>
+    <p>Paste <code>[ACTION: Do this]</code> followed by spoken text, <code>ACTION: Do this | "Say this"</code> steps, plain speech text, JSON, or <code>const script = [...]</code>. Then choose Apply script. It is saved in this browser.</p>
+    <textarea id="script-input" aria-label="Script text" spellcheck="false"></textarea>
+    <button id="apply-script" type="button">Apply script</button>
+    <button id="download-html" type="button">Download HTML</button>
+    <span id="editor-message" role="status" aria-live="polite"></span>
+  </details>
+  <header class="header">
+    <div>ACTION (Do this)</div>
+    <div>SPEAK (Say this)</div>
+  </header>
+  <main id="steps" aria-label="Tutorial script"></main>
+  <div class="voice-controls">
+    <button id="voice-toggle" type="button">Start voice follow</button>
+    <button id="export-html" type="button">Copy HTML</button>
+    <span id="mic-level">Mic: off</span>
+    <span id="voice-status" role="status" aria-live="polite">Or use ← / → to follow words.</span>
+  </div>
+  <div class="hint" id="position" aria-live="polite"></div>
+  <dialog id="export-dialog">
+    <h2>Copy standalone HTML</h2>
+    <p>Copy this text into a new plain text file named <strong>TellyPrompt.html</strong>, then open that file in Chrome. Your current script is included.</p>
+    <textarea id="export-text" readonly aria-label="Standalone HTML to copy"></textarea>
+    <button id="copy-export" type="button">Copy all</button>
+    <button id="close-export" type="button">Close</button>
+    <span id="export-status" role="status" aria-live="polite"></span>
+  </dialog>
+
+  <script id="runtime-script">
+    const container = document.getElementById("steps");
+    const position = document.getElementById("position");
+    const editor = document.getElementById("editor");
+    const scriptInput = document.getElementById("script-input");
+    const editorMessage = document.getElementById("editor-message");
+    const voiceButton = document.getElementById("voice-toggle");
+    const voiceStatus = document.getElementById("voice-status");
+    const micLevel = document.getElementById("mic-level");
+    const exportDialog = document.getElementById("export-dialog");
+    const exportText = document.getElementById("export-text");
+    const exportStatus = document.getElementById("export-status");
+    const storageKey = "tellyprompt-script";
+    let rows = [];
+    let wordsByRow = [];
+    let flatWords = [];
+    let rowEnds = [];
+    let activeIndex = 0;
+    let wordIndex = 0;
+    let currentScript = script;
+
+    function validateScript(value) {
+      if (!Array.isArray(value) || value.length === 0 || value.some(step =>
+        !step || typeof step.action !== "string" || typeof step.speak !== "string"
+      )) {
+        throw new Error('Use a nonempty JSON array of steps, each with "action" and "speak" text.');
+      }
+      return value;
+    }
+
+    function normalizeArrayLiteral(input) {
+      let output = "";
+      for (let i = 0; i < input.length;) {
+        const char = input[i];
+        if (char === '"' || char === "'" || char === "`") {
+          const quote = char;
+          let value = "";
+          let closed = false;
+          i++;
+          while (i < input.length) {
+            const next = input[i++];
+            if (next === quote) { closed = true; break; }
+            if (next !== "\\") { value += next; continue; }
+            if (i >= input.length) break;
+            const escaped = input[i++];
+            const escapes = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", v: "\v", "0": "\0" };
+            if (escaped === "u" && /^[0-9a-fA-F]{4}$/.test(input.slice(i, i + 4))) {
+              value += String.fromCharCode(parseInt(input.slice(i, i + 4), 16));
+              i += 4;
+            } else {
+              value += escapes[escaped] ?? escaped;
+            }
+          }
+          if (!closed) throw new Error("A quoted text field is missing its closing quote.");
+          if (quote === "`" && value.includes("${")) throw new Error("Template expressions are not supported. Paste the final spoken text instead.");
+          output += JSON.stringify(value);
+          continue;
+        }
+        if (char === "/" && input[i + 1] === "/") {
+          i = input.indexOf("\n", i + 2);
+          if (i < 0) break;
+          continue;
+        }
+        if (char === "/" && input[i + 1] === "*") {
+          const end = input.indexOf("*/", i + 2);
+          if (end < 0) throw new Error("A comment is missing its closing */.");
+          i = end + 2;
+          continue;
+        }
+        const key = input.slice(i).match(/^(action|speak)(?=\s*:)/);
+        if (key && /[{,]\s*$/.test(output)) {
+          output += `"${key[0]}"`;
+          i += key[0].length;
+          continue;
+        }
+        if (char === "," && /^\s*[}\]]/.test(input.slice(i + 1))) { i++; continue; }
+        output += char;
+        i++;
+      }
+      return output;
+    }
+
+    function parseScript(text) {
+      const input = text.trim().replace(/^```(?:javascript|js|json)?\s*\n/i, "").replace(/\n```\s*$/, "");
+      if (!input) throw new Error("Paste a script before applying it.");
+
+      if (/^\s*\[ACTION\s*:/im.test(input)) {
+        const steps = [];
+        let current = null;
+        let speechLines = [];
+        function finishStep() {
+          let speak = speechLines.join("\n").trim();
+          if (/^(["']).*\1$/s.test(speak)) speak = speak.slice(1, -1);
+          if (current === null && !speak) return;
+          if (current !== null && !speak) throw new Error(`The action "${current}" needs spoken text on the following line.`);
+          steps.push({ action: current ?? "", speak });
+        }
+        for (const line of input.split(/\r?\n/)) {
+          const marker = line.match(/^\s*\[ACTION\s*:\s*(.*)\]\s*$/i);
+          if (marker) {
+            finishStep();
+            current = marker[1].trim();
+            speechLines = [];
+          } else {
+            speechLines.push(line);
+          }
+        }
+        finishStep();
+        return validateScript(steps);
+      }
+
+      const actionMarkers = [...input.matchAll(/(?:^|\|)\s*ACTION\s*:/gi)];
+      if (actionMarkers.length) {
+        const steps = actionMarkers.map((marker, index) => {
+          const end = actionMarkers[index + 1]?.index ?? input.length;
+          const segment = input.slice(marker.index + marker[0].length, end);
+          const separator = segment.indexOf("|");
+          if (separator < 0) throw new Error(`Step ${index + 1} needs a | between action and spoken text.`);
+          const action = segment.slice(0, separator).trim();
+          let speak = segment.slice(separator + 1).trim().replace(/\|\s*$/, "").trim();
+          speak = speak.replace(/^SPEAK\s*:\s*/i, "");
+          if (/^(["']).*\1$/s.test(speak)) speak = speak.slice(1, -1);
+          return { action, speak };
+        });
+        return validateScript(steps);
+      }
+
+      if (!/^(?:(?:(?:export\s+)?(?:const|let|var))\s+script\s*=\s*)?[\[{]/.test(input)) {
+        return validateScript(input.split(/\n\s*\n/).map(speak => ({ action: "", speak: speak.trim() })));
+      }
+
+      const arrayText = input.replace(/^(?:(?:export\s+)?(?:const|let|var))\s+script\s*=\s*/, "").replace(/;\s*$/, "");
+      try { return validateScript(JSON.parse(arrayText)); }
+      catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        try { return validateScript(JSON.parse(normalizeArrayLiteral(arrayText))); }
+        catch (normalizedError) {
+          if (normalizedError instanceof SyntaxError) {
+            throw new Error(`Could not parse the array: ${normalizedError.message}`);
+          }
+          throw normalizedError;
+        }
+      }
+    }
+
+    function render(items, center = true) {
+      currentScript = items;
+      container.replaceChildren();
+      wordsByRow = [];
+      rows = items.map(({ action, speak }, index) => {
+        const row = document.createElement("section");
+        row.className = "step";
+        row.setAttribute("aria-label", `Step ${index + 1}`);
+
+        const actionCell = document.createElement("div");
+        actionCell.className = "cell action";
+        actionCell.textContent = action;
+
+        const speakCell = document.createElement("div");
+        speakCell.className = "cell speak";
+        const words = [];
+        for (const part of speak.split(/(\s+)/)) {
+          if (!part) continue;
+          if (/^\s+$/.test(part)) {
+            speakCell.append(document.createTextNode(part));
+          } else {
+            const word = document.createElement("span");
+            word.className = "word";
+            word.textContent = part;
+            word.addEventListener("click", () => {
+              if (activeIndex !== index) activate(index);
+              setWord(words.indexOf(word));
+              anchorVoice();
+            });
+            speakCell.append(word);
+            words.push(word);
+          }
+        }
+        wordsByRow.push(words);
+
+        row.append(actionCell, speakCell);
+        container.append(row);
+        return row;
+      });
+      let totalWords = 0;
+      flatWords = wordsByRow.flatMap((words, row) => words.map((element, word) => ({
+        row, word, text: cleanWord(element.textContent)
+      })));
+      rowEnds = wordsByRow.map(words => (totalWords += words.length) - 1);
+      activeIndex = 0;
+      activate(0, false, center);
+    }
+
+    function setWord(index, center = true) {
+      const words = wordsByRow[activeIndex] || [];
+      if (!words.length) return;
+      const next = Math.max(0, Math.min(index, words.length - 1));
+      const changed = next !== wordIndex;
+      wordIndex = next;
+      words.forEach((word, i) => {
+        word.classList.toggle("past", i < wordIndex);
+        word.classList.toggle("current", i === wordIndex);
+      });
+      if (center && changed && !editor.open) words[wordIndex].scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+        block: "center",
+        inline: "nearest"
+      });
+    }
+
+    function activate(index, smooth = true, center = true, fromVoice = false) {
+      if (index < 0 || index >= rows.length) return;
+      rows[activeIndex]?.classList.remove("active");
+      rows[activeIndex]?.removeAttribute("aria-current");
+      activeIndex = index;
+      rows[activeIndex].classList.add("active");
+      rows[activeIndex].setAttribute("aria-current", "step");
+      wordIndex = -1;
+      setWord(0, false);
+      if (!fromVoice) anchorVoice();
+      position.textContent = `Step ${activeIndex + 1} of ${rows.length} · Space: next · ↑: previous · ← / →: word`;
+      if (center) (rows[activeIndex].getBoundingClientRect().height > innerHeight * .8
+        ? wordsByRow[activeIndex][0] || rows[activeIndex]
+        : rows[activeIndex]).scrollIntoView({
+          behavior: smooth && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "instant",
+          block: "center"
+        });
+    }
+
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = Recognition ? new Recognition() : null;
+    let voiceRequested = false;
+    let voiceRunning = false;
+    let voiceAnchor = 0;
+    let transcriptOffset = 0;
+    let latestHeard = [];
+    let furthestMatched = -1;
+    let autoAdvanceTimer = null;
+    let recognitionGeneration = 0;
+    let recognitionStartedAt = 0;
+    let rapidEnds = 0;
+    let microphoneStream = null;
+    let audioContext = null;
+    let analyser = null;
+    let meterFrame = 0;
+    let lastMeterUpdate = 0;
+
+    function voiceMessage(message, isError = false) {
+      voiceStatus.textContent = message;
+      voiceStatus.parentElement.classList.toggle("error", isError);
+    }
+
+    function microphoneHelp(reason, source = "recognition") {
+      const policy = document.permissionsPolicy || document.featurePolicy;
+      if (policy?.allowsFeature?.("microphone") === false) {
+        return "This page's preview blocks the microphone. Open index.html directly in Chrome, or use a page that allows microphone access.";
+      }
+      if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        return "Microphone access needs a secure page. Open index.html directly in Chrome or serve it from localhost.";
+      }
+      if (reason === "NotAllowedError" || reason === "not-allowed" || reason === "service-not-allowed") {
+        return source === "microphone"
+          ? "Chrome denied microphone access. In Chrome's site controls, set Microphone to Allow while visiting the site, then reload."
+          : "Microphone access worked, but Chrome blocked speech recognition. Try a top-level HTTPS page and check Chrome's speech or site settings.";
+      }
+      if (reason === "NotFoundError" || reason === "audio-capture") {
+        return "Chrome cannot find a microphone. Connect one, check Chrome's microphone settings, then try again.";
+      }
+      if (reason === "network") {
+        return "Microphone access worked, but Chrome's speech service could not connect. Try a top-level HTTPS page with Internet access, or use Space to advance.";
+      }
+      return `Voice follow could not start (${reason || "unknown error"}). Check Chrome's microphone settings, then try again.`;
+    }
+
+    function cleanWord(text) {
+      return text.toLocaleLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
+    }
+
+    function releaseMicrophone() {
+      cancelAnimationFrame(meterFrame);
+      analyser = null;
+      if (audioContext) audioContext.close().catch(() => {});
+      audioContext = null;
+      if (microphoneStream) microphoneStream.getTracks().forEach(track => track.stop());
+      microphoneStream = null;
+      micLevel.textContent = "Mic: off";
+    }
+
+    function updateMicMeter(timestamp) {
+      if (!microphoneStream || !analyser) return;
+      if (timestamp - lastMeterUpdate > 100) {
+        const data = new Uint8Array(analyser.fftSize);
+        analyser.getByteTimeDomainData(data);
+        let power = 0;
+        for (const sample of data) power += ((sample - 128) / 128) ** 2;
+        micLevel.textContent = `Mic: ${Math.min(100, Math.round(Math.sqrt(power / data.length) * 350))}%`;
+        lastMeterUpdate = timestamp;
+      }
+      meterFrame = requestAnimationFrame(updateMicMeter);
+    }
+
+    async function acquireMicrophone() {
+      microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      microphoneStream.getAudioTracks()[0]?.addEventListener("ended", () => {
+        if (!voiceRequested) return;
+        voiceRequested = false;
+        voiceButton.textContent = "Start voice follow";
+        if (voiceRunning) recognition.abort();
+        releaseMicrophone();
+        voiceMessage("The microphone stopped. Check Chrome's microphone setting, then click Start again.", true);
+      });
+      micLevel.textContent = "Mic: active";
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) return;
+        audioContext = new AudioContextClass();
+        const source = audioContext.createMediaStreamSource(microphoneStream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        audioContext.resume().catch(() => {});
+        meterFrame = requestAnimationFrame(updateMicMeter);
+      } catch (_) { micLevel.textContent = "Mic: active"; }
+    }
+
+    function currentGlobalIndex() {
+      return flatWords.findIndex(({ row, word }) => row === activeIndex && word === wordIndex);
+    }
+
+    function anchorVoice() {
+      if (!voiceRequested) return;
+      clearTimeout(autoAdvanceTimer);
+      voiceAnchor = Math.max(0, currentGlobalIndex());
+      transcriptOffset = latestHeard.length;
+      furthestMatched = voiceAnchor - 1;
+    }
+
+    function startVoice() {
+      if (!voiceRequested || !recognition || voiceRunning) return;
+      latestHeard = [];
+      voiceAnchor = Math.max(0, currentGlobalIndex());
+      transcriptOffset = 0;
+      furthestMatched = voiceAnchor - 1;
+      try {
+        recognitionGeneration++;
+        recognitionStartedAt = Date.now();
+        voiceRunning = true;
+        recognition.start();
+      } catch (error) {
+        voiceRunning = false;
+        voiceRequested = false;
+        releaseMicrophone();
+        voiceButton.textContent = "Start voice follow";
+        voiceMessage(microphoneHelp(error.name), true);
+      }
+    }
+
+    if (recognition) {
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = navigator.language || "en-US";
+      recognition.onstart = () => { voiceMessage("Listening… words and rows follow your speech."); };
+      recognition.onresult = (event) => {
+        latestHeard = Array.from(event.results, result => result[0].transcript)
+          .join(" ").split(/\s+/).map(cleanWord).filter(Boolean);
+        if (latestHeard.length) voiceMessage(`Listening · heard: ${latestHeard.slice(-7).join(" ")}`);
+        if (latestHeard.length < transcriptOffset) transcriptOffset = latestHeard.length;
+        let cursor = voiceAnchor;
+        for (const token of latestHeard.slice(transcriptOffset)) {
+          let found = -1;
+          for (let i = cursor; i < Math.min(cursor + 8, flatWords.length); i++) {
+            if (flatWords[i].text === token) { found = i; break; }
+          }
+          if (found >= 0) cursor = found + 1;
+        }
+        const matched = cursor - 1;
+        if (matched <= furthestMatched) return;
+        furthestMatched = matched;
+        const target = flatWords[matched];
+        if (!target || target.row < activeIndex) return;
+        clearTimeout(autoAdvanceTimer);
+        if (target.row !== activeIndex) activate(target.row, true, true, true);
+        setWord(target.word);
+        if (matched === rowEnds[activeIndex] && activeIndex < rows.length - 1) {
+          const finishedRow = activeIndex;
+          autoAdvanceTimer = setTimeout(() => {
+            if (voiceRequested && activeIndex === finishedRow) activate(finishedRow + 1, true, true, true);
+          }, 550);
+        }
+      };
+      recognition.onerror = (event) => {
+        if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(event.error)) {
+          voiceRequested = false;
+          releaseMicrophone();
+          voiceButton.textContent = "Start voice follow";
+          voiceMessage(microphoneHelp(event.error), true);
+        }
+      };
+      recognition.onend = async () => {
+        voiceRunning = false;
+        if (!voiceRequested) return;
+        const endedGeneration = recognitionGeneration;
+        rapidEnds = Date.now() - recognitionStartedAt < 2000 ? rapidEnds + 1 : 0;
+        if (rapidEnds >= 2) {
+          voiceRequested = false;
+          releaseMicrophone();
+          voiceButton.textContent = "Resume voice follow";
+          voiceMessage("Chrome ended recognition repeatedly. Automatic retries stopped to prevent permission popups. Use Space or click Resume when ready.", true);
+          return;
+        }
+        let granted = false;
+        try {
+          const permission = await navigator.permissions.query({ name: "microphone" });
+          granted = permission.state === "granted";
+        } catch (_) { /* Unknown permission state: do not trigger a new prompt. */ }
+        if (!voiceRequested || endedGeneration !== recognitionGeneration) return;
+        if (granted && document.visibilityState === "visible") {
+          window.setTimeout(() => {
+            if (voiceRequested && endedGeneration === recognitionGeneration) startVoice();
+          }, 350);
+        } else {
+          voiceRequested = false;
+          releaseMicrophone();
+          voiceButton.textContent = "Resume voice follow";
+          voiceMessage("Chrome ended the listening session. Click Resume, or use Space. Choose 'Allow while visiting the site' to avoid repeated prompts.", true);
+        }
+      };
+    } else {
+      voiceButton.disabled = true;
+      voiceMessage("Chrome speech recognition is unavailable here. Use ← / → to follow words.", true);
+    }
+
+    voiceButton.addEventListener("click", async () => {
+      voiceButton.blur();
+      if (voiceRequested) {
+        voiceRequested = false;
+        recognitionGeneration++;
+        clearTimeout(autoAdvanceTimer);
+        if (voiceRunning) recognition.abort();
+        releaseMicrophone();
+        voiceButton.textContent = "Start voice follow";
+        voiceMessage("Voice follow stopped. Use ← / → to follow words.");
+      } else {
+        if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+          voiceMessage(microphoneHelp(), true);
+          return;
+        }
+        voiceButton.disabled = true;
+        voiceMessage("Requesting microphone access…");
+        try {
+          await acquireMicrophone();
+        } catch (error) {
+          releaseMicrophone();
+          voiceButton.disabled = false;
+          voiceMessage(microphoneHelp(error.name, "microphone"), true);
+          return;
+        }
+        voiceButton.disabled = false;
+        voiceRequested = true;
+        rapidEnds = 0;
+        voiceButton.textContent = "Stop voice follow";
+        voiceMessage("Starting speech recognition… If Chrome asks, choose 'Allow while visiting the site'.");
+        startVoice();
+      }
+    });
+
+    let initialScript = script;
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) initialScript = validateScript(JSON.parse(saved));
+    } catch (_) { /* Use the examples if browser storage is unavailable. */ }
+    scriptInput.value = JSON.stringify(initialScript, null, 2);
+    render(initialScript, false);
+
+    document.getElementById("apply-script").addEventListener("click", () => {
+      try {
+        const updated = parseScript(scriptInput.value);
+        let saved = true;
+        try { localStorage.setItem(storageKey, JSON.stringify(updated)); }
+        catch (_) { saved = false; }
+        render(updated, false);
+        editor.open = false;
+        editorMessage.classList.remove("error");
+        editorMessage.textContent = saved ? "Script saved." : "Script applied, but this browser could not save it.";
+        activate(0, false);
+      } catch (error) {
+        editorMessage.classList.add("error");
+        editorMessage.textContent = error instanceof SyntaxError
+          ? "Could not read the script. Use ACTION: ... | spoken text, plain text, or a valid array."
+          : error.message;
+      }
+    });
+
+    function standaloneHtml(items) {
+      const copy = document.documentElement.cloneNode(true);
+      copy.querySelector("#default-script").textContent =
+        `const script = ${JSON.stringify(items, null, 2).replace(/</g, "\\u003c")};`;
+      copy.querySelector("#runtime-script").textContent =
+        copy.querySelector("#runtime-script").textContent.replace(
+          'const storageKey = "tellyprompt-script";',
+          `const storageKey = "tellyprompt-export-${Date.now()}";`
+        );
+      copy.querySelector("#steps").replaceChildren();
+      copy.querySelector("#editor").open = true;
+      copy.querySelector("#script-input").textContent = "";
+      copy.querySelector("#editor-message").textContent = "";
+      copy.querySelector("#voice-toggle").textContent = "Start voice follow";
+      copy.querySelector("#mic-level").textContent = "Mic: off";
+      copy.querySelector("#voice-status").textContent = "Or use ← / → to follow words.";
+      copy.querySelector("#position").textContent = "";
+      copy.querySelector("#export-dialog").removeAttribute("open");
+      copy.querySelector("#export-text").textContent = "";
+      copy.querySelector("#export-status").textContent = "";
+      return "<!doctype html>\n" + copy.outerHTML;
+    }
+
+    document.getElementById("download-html").addEventListener("click", () => {
+      try {
+        const html = standaloneHtml(parseScript(scriptInput.value));
+        const blob = new Blob([html], { type: "text/html" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "TellyPrompt.html";
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+        editorMessage.classList.remove("error");
+        editorMessage.textContent = "Browser download requested. If the preview blocks it, use Copy HTML below.";
+      } catch (error) {
+        editorMessage.classList.add("error");
+        editorMessage.textContent = error.message;
+      }
+    });
+
+    document.getElementById("export-html").addEventListener("click", () => {
+      try {
+        const items = editor.open ? parseScript(scriptInput.value) : currentScript;
+        exportText.value = standaloneHtml(items);
+        exportStatus.textContent = "Press Copy all, or select all and press Ctrl+C (⌘C on Mac).";
+        exportDialog.showModal();
+        exportText.focus();
+        exportText.select();
+      } catch (error) {
+        editor.open = true;
+        editorMessage.classList.add("error");
+        editorMessage.textContent = error.message;
+        editor.scrollIntoView({ block: "start" });
+      }
+    });
+
+    document.getElementById("copy-export").addEventListener("click", async () => {
+      exportText.focus();
+      exportText.select();
+      try {
+        await navigator.clipboard.writeText(exportText.value);
+        exportStatus.textContent = "Copied. Paste into a plain text file named TellyPrompt.html.";
+      } catch (_) {
+        exportStatus.textContent = "The preview blocked automatic copying. The text is selected; press Ctrl+C (⌘C on Mac).";
+      }
+    });
+    document.getElementById("close-export").addEventListener("click", () => exportDialog.close());
+
+    window.addEventListener("keydown", (event) => {
+      if (editor.open || exportDialog.open || event.target.closest("button, summary, textarea, input, select, [contenteditable]")) return;
+      if (event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.code === "Space") {
+        event.preventDefault();
+        activate(activeIndex + 1);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        activate(activeIndex - 1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setWord(wordIndex + 1);
+        anchorVoice();
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setWord(wordIndex - 1);
+        anchorVoice();
+      }
+    });
+
+  </script>
+</body>
+</html>
