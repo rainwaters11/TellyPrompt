@@ -206,13 +206,14 @@
   <main id="steps" aria-label="Tutorial script"></main>
   <div class="voice-controls">
     <button id="voice-toggle" type="button">Start voice follow</button>
+    <button id="local-speech" type="button" hidden>Try on-device speech</button>
     <button id="find-place" type="button" title="Find the latest recognized phrase nearby">Find my place</button>
     <button id="forward-words" type="button" title="Move ahead five words and continue listening">Forward 5 words</button>
     <button id="back-step" type="button">Previous step</button>
     <button id="next-step" type="button">Next step</button>
     <span id="mic-level">Mic: off</span>
     <span id="voice-status" role="status" aria-live="polite">Or use ← / → to follow words.</span>
-    <span id="build-version">Build 1.6</span>
+    <span id="build-version">Build 1.7</span>
   </div>
   <div class="hint" id="position" aria-live="polite"></div>
   <dialog id="export-dialog">
@@ -231,6 +232,7 @@
     const scriptInput = document.getElementById("script-input");
     const editorMessage = document.getElementById("editor-message");
     const voiceButton = document.getElementById("voice-toggle");
+    const localSpeechButton = document.getElementById("local-speech");
     const findPlaceButton = document.getElementById("find-place");
     const forwardWordsButton = document.getElementById("forward-words");
     const backStepButton = document.getElementById("back-step");
@@ -468,6 +470,11 @@
     let recognitionStartedAt = 0;
     let rapidEnds = 0;
     let resumeOnVisible = false;
+    let retryTimer = null;
+    let networkFailures = 0;
+    let recognitionError = "";
+    let localSpeech = false;
+    let switchingRecognizer = false;
     let lastSpeechAt = 0;
     let lastTranscriptText = "";
     let microphoneStream = null;
@@ -508,6 +515,8 @@
     }
 
     function releaseMicrophone() {
+      clearTimeout(retryTimer);
+      retryTimer = null;
       cancelAnimationFrame(meterFrame);
       analyser = null;
       if (audioContext) audioContext.close().catch(() => {});
@@ -636,8 +645,71 @@
     backStepButton.addEventListener("click", () => activate(activeIndex - 1));
     nextStepButton.addEventListener("click", () => activate(activeIndex + 1));
 
+    const supportsLocalSpeech = !!(recognition && Recognition.available && Recognition.install &&
+      "processLocally" in recognition);
+    localSpeechButton.hidden = !supportsLocalSpeech;
+
+    async function prepareLocalSpeech(installPack = false) {
+      if (!supportsLocalSpeech) return false;
+      try {
+        const options = { langs: [recognition.lang], processLocally: true };
+        let state = await Recognition.available(options);
+        if (installPack && (state === "downloadable" || state === "downloading")) {
+          voiceMessage("Installing Chrome's on-device speech pack…");
+          if (await Recognition.install(options)) state = "available";
+        }
+        if (state !== "available") return false;
+        recognition.processLocally = true;
+        localSpeech = true;
+        localSpeechButton.textContent = "On-device speech on";
+        localSpeechButton.disabled = true;
+        return true;
+      } catch (_) { return false; }
+    }
+
+    function scheduleVoiceRetry(delay, message) {
+      clearTimeout(retryTimer);
+      voiceMessage(message, true);
+      const generation = recognitionGeneration;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        if (!voiceRequested || generation !== recognitionGeneration) return;
+        if (document.visibilityState !== "visible") {
+          resumeOnVisible = true;
+          voiceMessage("Voice follow paused while this tab is hidden. Return to the teleprompter tab to resume.");
+          return;
+        }
+        startVoice();
+      }, delay);
+    }
+
+    localSpeechButton.addEventListener("click", async () => {
+      localSpeechButton.disabled = true;
+      const enabled = await prepareLocalSpeech(true);
+      if (!enabled) {
+        localSpeechButton.disabled = false;
+        voiceMessage("On-device speech is unavailable in this Chrome installation. Network speech will keep retrying; use the step controls if it cannot connect.", true);
+        return;
+      }
+      clearTimeout(retryTimer);
+      retryTimer = null;
+      networkFailures = 0;
+      if (voiceRequested) {
+        if (voiceRunning) {
+          switchingRecognizer = true;
+          recognition.abort();
+        } else {
+          startVoice();
+        }
+      } else {
+        voiceMessage("On-device speech is ready. Click Start voice follow.");
+      }
+    });
+
     function startVoice() {
       if (!voiceRequested || !recognition || voiceRunning) return;
+      clearTimeout(retryTimer);
+      retryTimer = null;
       latestHeard = [];
       voiceAnchor = Math.max(0, currentGlobalIndex());
       transcriptOffset = 0;
@@ -647,10 +719,15 @@
       try {
         recognitionGeneration++;
         recognitionStartedAt = Date.now();
+        recognitionError = "";
         voiceRunning = true;
         recognition.start();
       } catch (error) {
         voiceRunning = false;
+        if (error.name === "InvalidStateError" && voiceRequested) {
+          scheduleVoiceRetry(1000, "Speech recognition is busy. Mic stays on; retrying in one second.");
+          return;
+        }
         voiceRequested = false;
         releaseMicrophone();
         voiceButton.textContent = "Start voice follow";
@@ -665,7 +742,7 @@
       recognition.onstart = () => {
         lastSpeechAt = Date.now();
         lastTranscriptText = "";
-        voiceMessage("Listening… words and rows follow your speech.");
+        voiceMessage(`Listening${localSpeech ? " on device" : " through Chrome's speech service"}… words and rows follow your speech.`);
       };
       recognition.onresult = (event) => {
         latestHeard = Array.from(event.results, result => result[0].transcript)
@@ -674,6 +751,7 @@
         if (transcriptText !== lastTranscriptText) {
           lastSpeechAt = Date.now();
           lastTranscriptText = transcriptText;
+          networkFailures = 0;
         }
         if (latestHeard.length) voiceMessage(`Listening · heard: ${latestHeard.slice(-7).join(" ")}`);
         // Chrome can replace interim text or drop old result segments. Begin
@@ -701,7 +779,10 @@
         }
       }, 2000);
       recognition.onerror = (event) => {
-        if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(event.error)) {
+        recognitionError = event.error;
+        if (event.error === "network") {
+          voiceMessage("Chrome's speech service disconnected. Keeping the mic and your place while reconnecting…", true);
+        } else if (["not-allowed", "service-not-allowed", "audio-capture"].includes(event.error)) {
           voiceRequested = false;
           releaseMicrophone();
           voiceButton.textContent = "Start voice follow";
@@ -712,6 +793,41 @@
         voiceRunning = false;
         if (!voiceRequested) return;
         const endedGeneration = recognitionGeneration;
+        if (switchingRecognizer) {
+          switchingRecognizer = false;
+          rapidEnds = 0;
+          scheduleVoiceRetry(250, "Switching to on-device speech while keeping your place…");
+          return;
+        }
+        if (recognitionError === "network") {
+          recognitionError = "";
+          let granted = false;
+          try {
+            const permission = await navigator.permissions.query({ name: "microphone" });
+            granted = permission.state === "granted";
+          } catch (_) { /* Avoid triggering a new permission prompt. */ }
+          if (!voiceRequested || endedGeneration !== recognitionGeneration) return;
+          if (!granted) {
+            voiceRequested = false;
+            releaseMicrophone();
+            voiceButton.textContent = "Resume voice follow";
+            voiceMessage("Speech service disconnected and microphone permission is not persistent. Click Resume to continue.", true);
+            return;
+          }
+          const switched = !localSpeech && await prepareLocalSpeech(false);
+          if (!voiceRequested || endedGeneration !== recognitionGeneration) return;
+          networkFailures = switched ? 0 : networkFailures + 1;
+          const delay = switched ? 300 : Math.min(12000, 1000 * 2 ** Math.min(networkFailures - 1, 4));
+          if (document.visibilityState !== "visible") {
+            resumeOnVisible = true;
+            voiceMessage("Speech service disconnected while this tab was hidden. Return to the teleprompter tab to resume.", true);
+          } else {
+            scheduleVoiceRetry(delay, switched
+              ? "Switching to on-device speech while keeping your place…"
+              : `Speech service disconnected. Mic stays on; retrying in ${Math.ceil(delay / 1000)} seconds. Use the step controls meanwhile.`);
+          }
+          return;
+        }
         rapidEnds = Date.now() - recognitionStartedAt < 2000 ? rapidEnds + 1 : 0;
         if (rapidEnds >= 2) {
           voiceRequested = false;
@@ -780,8 +896,10 @@
         voiceButton.disabled = false;
         voiceRequested = true;
         rapidEnds = 0;
+        networkFailures = 0;
         voiceButton.textContent = "Stop voice follow";
-        voiceMessage("Starting speech recognition… If Chrome asks, choose 'Allow while visiting the site'.");
+        await prepareLocalSpeech(false);
+        voiceMessage(`Starting ${localSpeech ? "on-device" : "Chrome"} speech recognition… If Chrome asks, choose 'Allow while visiting the site'.`);
         startVoice();
       }
     });
