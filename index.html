@@ -212,7 +212,7 @@
     <button id="next-step" type="button">Next step</button>
     <span id="mic-level">Mic: off</span>
     <span id="voice-status" role="status" aria-live="polite">Or use ← / → to follow words.</span>
-    <span id="build-version">Build 1.5</span>
+    <span id="build-version">Build 1.6</span>
   </div>
   <div class="hint" id="position" aria-live="polite"></div>
   <dialog id="export-dialog">
@@ -461,6 +461,7 @@
     let voiceAnchor = 0;
     let transcriptOffset = 0;
     let transcriptPrefix = "";
+    let speechRun = false;
     let latestHeard = [];
     let furthestMatched = -1;
     let recognitionGeneration = 0;
@@ -562,6 +563,7 @@
       voiceAnchor = Math.max(0, currentGlobalIndex());
       transcriptOffset = latestHeard.length;
       transcriptPrefix = latestHeard.join("\u0000");
+      speechRun = false;
       furthestMatched = voiceAnchor - 1;
     }
 
@@ -573,69 +575,33 @@
       anchorVoice();
     }
 
-    function matchSpeech(words) {
+    function matchSpeech(words, run) {
       let cursor = voiceAnchor;
       let consumed = 0;
       for (let heard = 0; heard < words.length && cursor < flatWords.length; heard++) {
         const atRowStart = cursor > 0 && flatWords[cursor].row !== flatWords[cursor - 1].row;
-        if (words[heard] === flatWords[cursor].text) {
-          // A row change needs the next spoken word too. A stray common word
-          // must not move the highlight into another section.
-          if (atRowStart && words[heard + 1] !== flatWords[cursor + 1]?.text) continue;
+        if (run && !atRowStart && words[heard] === flatWords[cursor].text) {
           cursor++;
           consumed = heard + 1;
           continue;
         }
-        // Recover from a few omitted or misheard words only when two adjacent
-        // script words are heard together. Ignore unrelated speech entirely.
-        let advanced = false;
-        for (let candidate = cursor + 1; candidate < Math.min(cursor + 4, flatWords.length - 1); candidate++) {
+        // After a mismatch, require two consecutive words close to the cursor.
+        // Automatic matching never skips into another row. The recording
+        // controls handle deliberate long moves and missed row endings.
+        run = false;
+        for (let candidate = cursor; candidate < Math.min(cursor + 4, flatWords.length - 1); candidate++) {
           if (words[heard] !== flatWords[candidate].text ||
               words[heard + 1] !== flatWords[candidate + 1].text ||
-              flatWords[candidate].row !== flatWords[candidate + 1].row) continue;
+              flatWords[candidate].row !== flatWords[candidate + 1].row ||
+              flatWords[candidate].row !== flatWords[cursor].row) continue;
           cursor = candidate + 2;
           heard++;
           consumed = heard + 1;
-          advanced = true;
+          run = true;
           break;
         }
-        if (advanced) continue;
-        // A distinct three-word phrase can recover from a longer missed stretch
-        // within this row, without trusting an isolated common word.
-        if (words[heard + 1] && words[heard + 2]) {
-          for (let candidate = cursor + 4; candidate < Math.min(cursor + 17, flatWords.length - 2); candidate++) {
-            if (flatWords[candidate].row !== flatWords[cursor].row ||
-                flatWords[candidate].row !== flatWords[candidate + 2].row ||
-                words[heard] !== flatWords[candidate].text ||
-                words[heard + 1] !== flatWords[candidate + 1].text ||
-                words[heard + 2] !== flatWords[candidate + 2].text) continue;
-            cursor = candidate + 3;
-            heard += 2;
-            consumed = heard + 1;
-            advanced = true;
-            break;
-          }
-        }
-        if (advanced) continue;
-        // Long tutorial paragraphs can exceed the short recovery window. A
-        // unique four-word phrase is strong enough to recover farther ahead.
-        if (words[heard + 3]) {
-          let found = -1;
-          for (let candidate = cursor + 17; candidate < Math.min(cursor + 121, flatWords.length - 3); candidate++) {
-            if (flatWords[candidate].row !== flatWords[cursor].row ||
-                flatWords[candidate + 3].row !== flatWords[cursor].row ||
-                [0, 1, 2, 3].some(offset => words[heard + offset] !== flatWords[candidate + offset].text)) continue;
-            if (found >= 0) { found = -1; break; }
-            found = candidate;
-          }
-          if (found >= 0) {
-            cursor = found + 4;
-            heard += 3;
-            consumed = heard + 1;
-          }
-        }
       }
-      return { matched: cursor - 1, consumed };
+      return { matched: cursor - 1, consumed, run };
     }
 
     findPlaceButton.addEventListener("click", () => {
@@ -676,6 +642,7 @@
       voiceAnchor = Math.max(0, currentGlobalIndex());
       transcriptOffset = 0;
       transcriptPrefix = "";
+      speechRun = false;
       furthestMatched = voiceAnchor - 1;
       try {
         recognitionGeneration++;
@@ -714,8 +681,10 @@
         if (latestHeard.slice(0, transcriptOffset).join("\u0000") !== transcriptPrefix) {
           transcriptOffset = 0;
           transcriptPrefix = "";
+          speechRun = false;
         }
-        const { matched, consumed } = matchSpeech(latestHeard.slice(transcriptOffset));
+        const { matched, consumed, run } = matchSpeech(latestHeard.slice(transcriptOffset), speechRun);
+        speechRun = run;
         if (matched <= furthestMatched) return;
         furthestMatched = matched;
         voiceAnchor = matched + 1;
