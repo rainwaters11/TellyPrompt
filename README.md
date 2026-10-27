@@ -23,6 +23,7 @@ Apply the script before presenting. It is saved in that browser for the current 
 - Space: next row; Up Arrow: previous row.
 - Right and Left Arrows: next and previous spoken word.
 - Voice follow: highlight recognized words and advance when it hears the first two words of the next row. Unrelated speech is ignored; after a missed word, it looks for a nearby two-word phrase before moving ahead. Speech recognition is a convenience feature; keep the keyboard controls available when recognition misses technical terms or ends after a pause.
+- If the highlight gets stuck, speak a few words from your current place and click **Find my place**. It searches nearby script text for Chrome's latest recognized phrase and continues the same listening session. **Forward 5 words** advances without relying on recognition. You can also click any spoken word to sync there, or use the arrow keys and Space.
 
 Use a top-level Chrome tab for microphone access. Embedded previews may block the microphone. In Chrome's microphone prompt, choose **Allow while visiting the site** to reduce repeated prompts. The app requests microphone access once when voice follow starts and keeps that stream open while listening. It only retries speech recognition automatically when Chrome reports microphone permission as granted, and stops retries after repeated quick failures. Browser speech recognition may still end after pauses or mishear specialized terms.
 

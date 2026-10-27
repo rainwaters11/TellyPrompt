@@ -104,6 +104,7 @@
       z-index: 2;
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 10px;
       max-width: calc(100% - 340px);
       padding: 6px 9px;
@@ -122,6 +123,7 @@
       background: #263241;
       color: #fff;
       cursor: pointer;
+      white-space: nowrap;
     }
     #export-dialog {
       width: min(920px, 95vw);
@@ -197,6 +199,8 @@
   <main id="steps" aria-label="Tutorial script"></main>
   <div class="voice-controls">
     <button id="voice-toggle" type="button">Start voice follow</button>
+    <button id="find-place" type="button" title="Find the latest recognized phrase nearby">Find my place</button>
+    <button id="forward-words" type="button" title="Move ahead five words and continue listening">Forward 5 words</button>
     <button id="export-html" type="button">Copy HTML</button>
     <span id="mic-level">Mic: off</span>
     <span id="voice-status" role="status" aria-live="polite">Or use ← / → to follow words.</span>
@@ -218,6 +222,8 @@
     const scriptInput = document.getElementById("script-input");
     const editorMessage = document.getElementById("editor-message");
     const voiceButton = document.getElementById("voice-toggle");
+    const findPlaceButton = document.getElementById("find-place");
+    const forwardWordsButton = document.getElementById("forward-words");
     const voiceStatus = document.getElementById("voice-status");
     const micLevel = document.getElementById("mic-level");
     const exportDialog = document.getElementById("export-dialog");
@@ -543,6 +549,14 @@
       furthestMatched = voiceAnchor - 1;
     }
 
+    function moveToGlobal(index) {
+      const target = flatWords[index];
+      if (!target) return;
+      if (target.row !== activeIndex) activate(target.row, true, true, true);
+      setWord(target.word);
+      anchorVoice();
+    }
+
     function matchSpeech(words) {
       let cursor = voiceAnchor;
       for (let heard = 0; heard < words.length && cursor < flatWords.length; heard++) {
@@ -556,17 +570,63 @@
         }
         // Recover from a few omitted or misheard words only when two adjacent
         // script words are heard together. Ignore unrelated speech entirely.
+        let advanced = false;
         for (let candidate = cursor + 1; candidate < Math.min(cursor + 4, flatWords.length - 1); candidate++) {
           if (words[heard] !== flatWords[candidate].text ||
               words[heard + 1] !== flatWords[candidate + 1].text ||
               flatWords[candidate].row !== flatWords[candidate + 1].row) continue;
           cursor = candidate + 2;
           heard++;
+          advanced = true;
           break;
+        }
+        if (advanced) continue;
+        // A distinct three-word phrase can recover from a longer missed stretch
+        // within this row, without trusting an isolated common word.
+        if (words[heard + 1] && words[heard + 2]) {
+          for (let candidate = cursor + 4; candidate < Math.min(cursor + 17, flatWords.length - 2); candidate++) {
+            if (flatWords[candidate].row !== flatWords[cursor].row ||
+                flatWords[candidate].row !== flatWords[candidate + 2].row ||
+                words[heard] !== flatWords[candidate].text ||
+                words[heard + 1] !== flatWords[candidate + 1].text ||
+                words[heard + 2] !== flatWords[candidate + 2].text) continue;
+            cursor = candidate + 3;
+            heard += 2;
+            break;
+          }
         }
       }
       return cursor - 1;
     }
+
+    findPlaceButton.addEventListener("click", () => {
+      const current = Math.max(0, currentGlobalIndex());
+      const recent = latestHeard.slice(-12);
+      let best = null;
+      for (let index = current + 1; index < Math.min(current + 81, flatWords.length); index++) {
+        if (flatWords[index].row > activeIndex + 1) break;
+        for (let start = 0; start < recent.length - 1; start++) {
+          let length = 0;
+          while (length < 3 && start + length < recent.length && index + length < flatWords.length &&
+                 flatWords[index + length].row === flatWords[index].row &&
+                 recent[start + length] === flatWords[index + length].text) length++;
+          if (length < 2) continue;
+          const score = length * 100 + start * 2 - (index - current);
+          if (!best || score > best.score) best = { index: index + length - 1, score };
+        }
+      }
+      if (best) {
+        moveToGlobal(best.index);
+        voiceMessage(`Found your place at step ${activeIndex + 1}. Continue speaking.`);
+      } else {
+        voiceMessage("No nearby phrase found. Click the word you are saying, or use Forward 5 words.", true);
+      }
+    });
+
+    forwardWordsButton.addEventListener("click", () => {
+      moveToGlobal(Math.min(currentGlobalIndex() + 5, flatWords.length - 1));
+      voiceMessage(`Moved forward five words in step ${activeIndex + 1}. Continue speaking.`);
+    });
 
     function startVoice() {
       if (!voiceRequested || !recognition || voiceRunning) return;
