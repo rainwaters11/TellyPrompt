@@ -99,32 +99,36 @@
 
     .voice-controls {
       position: fixed;
-      left: 16px;
-      bottom: 12px;
-      z-index: 2;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 5;
       display: flex;
       align-items: center;
       flex-wrap: wrap;
-      gap: 10px;
-      max-width: calc(100% - 340px);
-      padding: 6px 9px;
-      border-radius: 6px;
+      gap: 8px 12px;
+      padding: 12px 16px;
+      border-top: 2px solid #526781;
       background: #111;
       color: #bbb;
-      font-size: 13px;
+      font-size: 15px;
     }
-    .voice-controls.error { max-width: min(700px, calc(100% - 32px)); }
-    #voice-status { min-width: 0; overflow-wrap: anywhere; }
+    #voice-status { min-width: 200px; flex: 1 1 260px; overflow-wrap: anywhere; }
     #mic-level { white-space: nowrap; color: #aad6ae; }
+    #build-version { color: #8fa1b9; white-space: nowrap; }
     .voice-controls button {
-      padding: 6px 9px;
+      min-height: 44px;
+      padding: 10px 14px;
       border: 1px solid #555;
       border-radius: 5px;
       background: #263241;
       color: #fff;
       cursor: pointer;
       white-space: nowrap;
+      font: 700 16px Arial, Helvetica, sans-serif;
     }
+    #find-place { background: #205293; border-color: #7bb1ed; }
+    .voice-controls.error #voice-status { color: #ff9999; }
     #export-dialog {
       width: min(920px, 95vw);
       max-height: 90vh;
@@ -163,7 +167,7 @@
     .hint {
       position: fixed;
       right: 16px;
-      bottom: 12px;
+      top: 72px;
       z-index: 2;
       padding: 7px 10px;
       border-radius: 6px;
@@ -176,7 +180,9 @@
       .header > div, .cell { padding: 18px 14px; }
       .action { font-size: 20px; }
       .speak { font-size: 24px; }
-      .voice-controls { bottom: 42px; max-width: calc(100% - 32px); }
+      .voice-controls { padding: 8px; gap: 6px; }
+      .voice-controls button { min-height: 38px; padding: 7px 9px; font-size: 13px; }
+      #voice-status { flex-basis: 100%; }
     }
     @media (prefers-reduced-motion: reduce) {
       .step { transition: none; }
@@ -190,6 +196,7 @@
     <textarea id="script-input" aria-label="Script text" spellcheck="false"></textarea>
     <button id="apply-script" type="button">Apply script</button>
     <button id="download-html" type="button">Download HTML</button>
+    <button id="export-html" type="button">Copy HTML</button>
     <span id="editor-message" role="status" aria-live="polite"></span>
   </details>
   <header class="header">
@@ -201,9 +208,11 @@
     <button id="voice-toggle" type="button">Start voice follow</button>
     <button id="find-place" type="button" title="Find the latest recognized phrase nearby">Find my place</button>
     <button id="forward-words" type="button" title="Move ahead five words and continue listening">Forward 5 words</button>
-    <button id="export-html" type="button">Copy HTML</button>
+    <button id="back-step" type="button">Previous step</button>
+    <button id="next-step" type="button">Next step</button>
     <span id="mic-level">Mic: off</span>
     <span id="voice-status" role="status" aria-live="polite">Or use ← / → to follow words.</span>
+    <span id="build-version">Build 1.4</span>
   </div>
   <div class="hint" id="position" aria-live="polite"></div>
   <dialog id="export-dialog">
@@ -224,6 +233,8 @@
     const voiceButton = document.getElementById("voice-toggle");
     const findPlaceButton = document.getElementById("find-place");
     const forwardWordsButton = document.getElementById("forward-words");
+    const backStepButton = document.getElementById("back-step");
+    const nextStepButton = document.getElementById("next-step");
     const voiceStatus = document.getElementById("voice-status");
     const micLevel = document.getElementById("mic-level");
     const exportDialog = document.getElementById("export-dialog");
@@ -592,7 +603,25 @@
                 words[heard + 2] !== flatWords[candidate + 2].text) continue;
             cursor = candidate + 3;
             heard += 2;
+            advanced = true;
             break;
+          }
+        }
+        if (advanced) continue;
+        // Long tutorial paragraphs can exceed the short recovery window. A
+        // unique four-word phrase is strong enough to recover farther ahead.
+        if (words[heard + 3]) {
+          let found = -1;
+          for (let candidate = cursor + 17; candidate < Math.min(cursor + 121, flatWords.length - 3); candidate++) {
+            if (flatWords[candidate].row !== flatWords[cursor].row ||
+                flatWords[candidate + 3].row !== flatWords[cursor].row ||
+                [0, 1, 2, 3].some(offset => words[heard + offset] !== flatWords[candidate + offset].text)) continue;
+            if (found >= 0) { found = -1; break; }
+            found = candidate;
+          }
+          if (found >= 0) {
+            cursor = found + 4;
+            heard += 3;
           }
         }
       }
@@ -603,7 +632,7 @@
       const current = Math.max(0, currentGlobalIndex());
       const recent = latestHeard.slice(-12);
       let best = null;
-      for (let index = current + 1; index < Math.min(current + 81, flatWords.length); index++) {
+      for (let index = current + 1; index < Math.min(current + 201, flatWords.length); index++) {
         if (flatWords[index].row > activeIndex + 1) break;
         for (let start = 0; start < recent.length - 1; start++) {
           let length = 0;
@@ -627,6 +656,9 @@
       moveToGlobal(Math.min(currentGlobalIndex() + 5, flatWords.length - 1));
       voiceMessage(`Moved forward five words in step ${activeIndex + 1}. Continue speaking.`);
     });
+
+    backStepButton.addEventListener("click", () => activate(activeIndex - 1));
+    nextStepButton.addEventListener("click", () => activate(activeIndex + 1));
 
     function startVoice() {
       if (!voiceRequested || !recognition || voiceRunning) return;
