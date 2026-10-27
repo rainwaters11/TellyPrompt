@@ -29,6 +29,8 @@ Use a top-level Chrome tab for microphone access. Embedded previews may block th
 
 When voice follow starts, the **Mic** level shows whether the browser is receiving sound, and the status shows the latest words Chrome recognized. If the level stays at zero while speaking, check the selected microphone and operating system permissions. If the level moves but no words appear, the browser's speech service is the failing part; try the top-level HTTPS deployment and keep Space available as a fallback.
 
+Build 1.5 keeps its match position when Chrome replaces or shortens a recognition transcript. This matters during long sections, when earlier result segments may disappear. If Chrome returns no new words for ten seconds, the control bar says so; compare that message with the Mic level to distinguish a speech-service pause from a script-matching problem. If Chrome ends recognition while this tab is hidden, the app waits and resumes when the tab becomes visible again while retaining its microphone stream.
+
 ## Static hosting
 
 The repository root contains `index.html` and needs no build command or dependencies. To host it on Vercel, import the GitHub repository as a static project and deploy the root directory. Open the resulting HTTPS URL in a top-level Chrome tab. Hosting gives Chrome a stable origin for site permissions; it does not make browser speech recognition perfectly reliable or correct script import errors.

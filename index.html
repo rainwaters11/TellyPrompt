@@ -212,7 +212,7 @@
     <button id="next-step" type="button">Next step</button>
     <span id="mic-level">Mic: off</span>
     <span id="voice-status" role="status" aria-live="polite">Or use ← / → to follow words.</span>
-    <span id="build-version">Build 1.4</span>
+    <span id="build-version">Build 1.5</span>
   </div>
   <div class="hint" id="position" aria-live="polite"></div>
   <dialog id="export-dialog">
@@ -460,11 +460,15 @@
     let voiceRunning = false;
     let voiceAnchor = 0;
     let transcriptOffset = 0;
+    let transcriptPrefix = "";
     let latestHeard = [];
     let furthestMatched = -1;
     let recognitionGeneration = 0;
     let recognitionStartedAt = 0;
     let rapidEnds = 0;
+    let resumeOnVisible = false;
+    let lastSpeechAt = 0;
+    let lastTranscriptText = "";
     let microphoneStream = null;
     let audioContext = null;
     let analyser = null;
@@ -557,6 +561,7 @@
       if (!voiceRequested) return;
       voiceAnchor = Math.max(0, currentGlobalIndex());
       transcriptOffset = latestHeard.length;
+      transcriptPrefix = latestHeard.join("\u0000");
       furthestMatched = voiceAnchor - 1;
     }
 
@@ -570,6 +575,7 @@
 
     function matchSpeech(words) {
       let cursor = voiceAnchor;
+      let consumed = 0;
       for (let heard = 0; heard < words.length && cursor < flatWords.length; heard++) {
         const atRowStart = cursor > 0 && flatWords[cursor].row !== flatWords[cursor - 1].row;
         if (words[heard] === flatWords[cursor].text) {
@@ -577,6 +583,7 @@
           // must not move the highlight into another section.
           if (atRowStart && words[heard + 1] !== flatWords[cursor + 1]?.text) continue;
           cursor++;
+          consumed = heard + 1;
           continue;
         }
         // Recover from a few omitted or misheard words only when two adjacent
@@ -588,6 +595,7 @@
               flatWords[candidate].row !== flatWords[candidate + 1].row) continue;
           cursor = candidate + 2;
           heard++;
+          consumed = heard + 1;
           advanced = true;
           break;
         }
@@ -603,6 +611,7 @@
                 words[heard + 2] !== flatWords[candidate + 2].text) continue;
             cursor = candidate + 3;
             heard += 2;
+            consumed = heard + 1;
             advanced = true;
             break;
           }
@@ -622,10 +631,11 @@
           if (found >= 0) {
             cursor = found + 4;
             heard += 3;
+            consumed = heard + 1;
           }
         }
       }
-      return cursor - 1;
+      return { matched: cursor - 1, consumed };
     }
 
     findPlaceButton.addEventListener("click", () => {
@@ -665,6 +675,7 @@
       latestHeard = [];
       voiceAnchor = Math.max(0, currentGlobalIndex());
       transcriptOffset = 0;
+      transcriptPrefix = "";
       furthestMatched = voiceAnchor - 1;
       try {
         recognitionGeneration++;
@@ -684,20 +695,42 @@
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = navigator.language || "en-US";
-      recognition.onstart = () => { voiceMessage("Listening… words and rows follow your speech."); };
+      recognition.onstart = () => {
+        lastSpeechAt = Date.now();
+        lastTranscriptText = "";
+        voiceMessage("Listening… words and rows follow your speech.");
+      };
       recognition.onresult = (event) => {
         latestHeard = Array.from(event.results, result => result[0].transcript)
           .join(" ").split(/\s+/).map(cleanWord).filter(Boolean);
+        const transcriptText = latestHeard.join(" ");
+        if (transcriptText !== lastTranscriptText) {
+          lastSpeechAt = Date.now();
+          lastTranscriptText = transcriptText;
+        }
         if (latestHeard.length) voiceMessage(`Listening · heard: ${latestHeard.slice(-7).join(" ")}`);
-        if (latestHeard.length < transcriptOffset) transcriptOffset = latestHeard.length;
-        const matched = matchSpeech(latestHeard.slice(transcriptOffset));
+        // Chrome can replace interim text or drop old result segments. Begin
+        // at the new transcript when the part already read has changed.
+        if (latestHeard.slice(0, transcriptOffset).join("\u0000") !== transcriptPrefix) {
+          transcriptOffset = 0;
+          transcriptPrefix = "";
+        }
+        const { matched, consumed } = matchSpeech(latestHeard.slice(transcriptOffset));
         if (matched <= furthestMatched) return;
         furthestMatched = matched;
+        voiceAnchor = matched + 1;
+        transcriptOffset += consumed;
+        transcriptPrefix = latestHeard.slice(0, transcriptOffset).join("\u0000");
         const target = flatWords[matched];
         if (!target || target.row < activeIndex) return;
         if (target.row !== activeIndex) activate(target.row, true, true, true);
         setWord(target.word);
       };
+      window.setInterval(() => {
+        if (voiceRequested && voiceRunning && Date.now() - lastSpeechAt > 10000) {
+          voiceMessage("No new words from Chrome for 10 seconds. If you are speaking, check the Mic level; voice recognition may have stalled.", true);
+        }
+      }, 2000);
       recognition.onerror = (event) => {
         if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(event.error)) {
           voiceRequested = false;
@@ -728,6 +761,9 @@
           window.setTimeout(() => {
             if (voiceRequested && endedGeneration === recognitionGeneration) startVoice();
           }, 350);
+        } else if (granted) {
+          resumeOnVisible = true;
+          voiceMessage("Voice follow paused while this tab is hidden. Return to the teleprompter tab to resume.");
         } else {
           voiceRequested = false;
           releaseMicrophone();
@@ -740,10 +776,18 @@
       voiceMessage("Chrome speech recognition is unavailable here. Use ← / → to follow words.", true);
     }
 
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && resumeOnVisible && voiceRequested) {
+        resumeOnVisible = false;
+        startVoice();
+      }
+    });
+
     voiceButton.addEventListener("click", async () => {
       voiceButton.blur();
       if (voiceRequested) {
         voiceRequested = false;
+        resumeOnVisible = false;
         recognitionGeneration++;
         if (voiceRunning) recognition.abort();
         releaseMicrophone();
