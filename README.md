@@ -1,6 +1,6 @@
 # TellyPrompt
 
-A single-file, two-column teleprompter for technical tutorials. Open `index.html` in Chrome or host it as a static page.
+A single-file, two-column teleprompter for technical tutorials. Open `index.html` in Chrome or host it as a static page. The optional `stream-proxy/` service provides dedicated live transcription.
 
 ## Script format
 
@@ -31,10 +31,31 @@ On supported Chrome versions, **Try on-device speech** checks for an English lan
 
 When voice follow starts, the **Mic** level shows whether the browser is receiving sound, and the status shows the latest words Chrome recognized. If the level stays at zero while speaking, check the selected microphone and operating system permissions. If the level moves but no words appear, the browser's speech service is the failing part; try the top-level HTTPS deployment and keep Space available as a fallback.
 
-Build 1.7 keeps its match position when Chrome replaces or shortens a recognition transcript. It also limits automatic matching to nearby words; use **Find my place** for a deliberate longer jump. If Chrome returns no new words for ten seconds, the control bar says so; compare that message with the Mic level to distinguish a speech-service pause from a script-matching problem. If Chrome ends recognition while this tab is hidden, the app waits and resumes when the tab becomes visible again while retaining its microphone stream.
+Build 1.8 keeps its match position when Chrome replaces or shortens a recognition transcript. It also limits automatic matching to nearby words; use **Find my place** for a deliberate longer jump. If Chrome returns no new words for ten seconds, the control bar says so; compare that message with the Mic level to distinguish a speech-service pause from a script-matching problem. If Chrome ends recognition while this tab is hidden, the app waits and resumes when the tab becomes visible again while retaining its microphone stream.
+
+## Dedicated streaming transcription (Deepgram + Railway)
+
+The frontend remains on Vercel. Railway runs the WebSocket proxy in `stream-proxy/`, which holds your Deepgram API key. The browser sends microphone audio to Railway and receives transcript text. The provider key never goes into the HTML or browser storage. This uses two paid or metered services; check their current pricing before recording.
+
+1. In the [Deepgram Console](https://console.deepgram.com/), create a project and an API key authorized for live speech recognition. Copy it privately. Do not paste it into this repository or the teleprompter page.
+2. Generate a separate access code. On Linux, run `openssl rand -hex 24` and save the 48-character output. This is the code you will enter into the teleprompter. It is not your Deepgram API key.
+3. In [Railway](https://railway.com/), create a project, choose **Deploy from GitHub repo**, and select `rainwaters11/TellyPrompt`. Set the service **Root Directory** to `/stream-proxy`. Railway should install dependencies with `npm ci` and run `npm start` (Node 20 or newer). Do not set `PORT`; Railway provides it.
+4. In Railway's service **Variables**, set:
+
+   ```text
+   DEEPGRAM_API_KEY=your Deepgram API key
+   TELLYPROMPT_ACCESS_CODE=the 48-character code from step 2
+   ALLOWED_ORIGIN=https://tellyprompt-git-main-mistys-projects-9d6f5198.vercel.app
+   ```
+
+   `ALLOWED_ORIGIN` must match the exact address shown in your teleprompter's browser tab, without a trailing slash. If you later use another Vercel domain, update this variable and redeploy the Railway service.
+5. Deploy the Railway service and generate a **Public Domain** in its **Networking** settings. Open `https://YOUR-RAILWAY-DOMAIN/health`; it should respond with `{"ok":true}`. The `/transcribe` route accepts WebSocket connections only from your allowed site with the access code.
+6. Open the latest Vercel teleprompter (**Build 1.8**), expand **Streaming transcription setup**, and enter `wss://YOUR-RAILWAY-DOMAIN/transcribe` plus the access code from step 2. Click **Use streaming transcription**, apply your script, then click **Start voice follow**. The bottom status should say **Listening through streaming transcription** and then show the words it hears.
+
+The app saves the proxy URL in local browser storage and the access code only for the current browser tab. If you open a new tab, enter the code again. **Use browser speech** in the setup section switches back to Chrome's built-in option on the next voice-follow start. The page retains the microphone stream and retries the streaming connection after a temporary disconnect. During an outage, you can use the step controls without restarting the page.
 
 ## Static hosting
 
-The repository root contains `index.html` and needs no build command or dependencies. To host it on Vercel, import the GitHub repository as a static project and deploy the root directory. Open the resulting HTTPS URL in a top-level Chrome tab. Hosting gives Chrome a stable origin for site permissions; it does not make browser speech recognition perfectly reliable or correct script import errors.
+The repository root contains `index.html` and needs no build command or dependencies for Vercel. Keep the Vercel project root at the repository root; only the separate Railway service uses `stream-proxy` as its root. Open the resulting HTTPS URL in a top-level Chrome tab. Hosting gives Chrome a stable origin for site permissions; it does not make browser speech recognition perfectly reliable or correct script import errors.
 
 Use the project's production domain from Vercel's **Domains** page for ongoing testing. A URL with a generated deployment identifier points to one specific build and will not update after later GitHub pushes. Check the visible build label in the control bar after each deployment.

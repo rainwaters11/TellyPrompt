@@ -28,6 +28,11 @@
       background: #111;
     }
     .editor summary { cursor: pointer; font-size: 20px; font-weight: 700; }
+    .stream-settings { margin-top: 0; }
+    .stream-settings label { display: inline-flex; flex-direction: column; gap: 6px; margin: 8px 12px 8px 0; color: #ccc; }
+    .stream-settings input { width: min(420px, 80vw); padding: 10px; border: 1px solid #666; border-radius: 5px; background: #050505; color: #fff; font: 16px Arial, Helvetica, sans-serif; }
+    .stream-settings button { margin: 8px 8px 8px 0; padding: 10px 12px; border: 1px solid #777; border-radius: 5px; background: #263241; color: #fff; cursor: pointer; }
+    #stream-settings-status { color: #aaa; }
     .editor p { color: #bbb; line-height: 1.4; }
     .editor textarea {
       display: block;
@@ -199,6 +204,13 @@
     <button id="export-html" type="button">Copy HTML</button>
     <span id="editor-message" role="status" aria-live="polite"></span>
   </details>
+  <details class="editor stream-settings" id="stream-settings">
+    <summary>Streaming transcription setup (optional)</summary>
+    <p>Use a private transcription proxy for live speech. Enter its secure WebSocket address and your access code. Your provider API key stays on the proxy.</p>
+    <label>WebSocket address <input id="stream-url" type="url" placeholder="wss://your-service.up.railway.app/transcribe" autocomplete="url"></label>
+    <label>Access code <input id="stream-code" type="password" placeholder="Your private access code" autocomplete="off"></label>
+    <div><button id="save-stream" type="button">Use streaming transcription</button><button id="clear-stream" type="button">Use browser speech</button><span id="stream-settings-status" role="status"></span></div>
+  </details>
   <header class="header">
     <div>ACTION (Do this)</div>
     <div>SPEAK (Say this)</div>
@@ -213,7 +225,7 @@
     <button id="next-step" type="button">Next step</button>
     <span id="mic-level">Mic: off</span>
     <span id="voice-status" role="status" aria-live="polite">Or use ← / → to follow words.</span>
-    <span id="build-version">Build 1.7</span>
+    <span id="build-version">Build 1.8</span>
   </div>
   <div class="hint" id="position" aria-live="polite"></div>
   <dialog id="export-dialog">
@@ -243,6 +255,50 @@
     const exportText = document.getElementById("export-text");
     const exportStatus = document.getElementById("export-status");
     const storageKey = "tellyprompt-script";
+    const streamUrlInput = document.getElementById("stream-url");
+    const streamCodeInput = document.getElementById("stream-code");
+    const streamSettingsStatus = document.getElementById("stream-settings-status");
+    let streamConfig = null;
+    try {
+      streamUrlInput.value = localStorage.getItem("tellyprompt-stream-url") || "";
+      streamCodeInput.value = sessionStorage.getItem("tellyprompt-stream-code") || "";
+      if (streamUrlInput.value && streamCodeInput.value) {
+        streamConfig = { url: streamUrlInput.value, code: streamCodeInput.value };
+        streamSettingsStatus.textContent = "Streaming service configured for this tab.";
+      }
+    } catch (_) { /* Storage is optional. */ }
+
+    document.getElementById("save-stream").addEventListener("click", () => {
+      try {
+        const url = new URL(streamUrlInput.value.trim());
+        if ((url.protocol !== "wss:" && !(url.protocol === "ws:" &&
+            ["localhost", "127.0.0.1"].includes(url.hostname))) ||
+            url.pathname !== "/transcribe" || url.search || url.username || url.password) {
+          throw new Error("Enter a wss:// address ending in /transcribe.");
+        }
+        const code = streamCodeInput.value.trim();
+        if (!/^[A-Za-z0-9_-]{16,128}$/.test(code)) {
+          throw new Error("Enter the 16-character or longer access code set on the service.");
+        }
+        streamConfig = { url: url.href, code };
+        if (!recognition) voiceButton.disabled = false;
+        try {
+          localStorage.setItem("tellyprompt-stream-url", url.href);
+          sessionStorage.setItem("tellyprompt-stream-code", code);
+        } catch (_) { /* Settings still work in this tab. */ }
+        streamSettingsStatus.textContent = "Streaming configured. Stop and restart voice follow to use it.";
+      } catch (error) { streamSettingsStatus.textContent = error.message; }
+    });
+    document.getElementById("clear-stream").addEventListener("click", () => {
+      streamConfig = null;
+      if (!recognition) voiceButton.disabled = true;
+      streamCodeInput.value = "";
+      try {
+        localStorage.removeItem("tellyprompt-stream-url");
+        sessionStorage.removeItem("tellyprompt-stream-code");
+      } catch (_) { /* Storage is optional. */ }
+      streamSettingsStatus.textContent = "Browser speech selected. Stop and restart voice follow to switch.";
+    });
     let rows = [];
     let wordsByRow = [];
     let flatWords = [];
@@ -475,6 +531,13 @@
     let recognitionError = "";
     let localSpeech = false;
     let switchingRecognizer = false;
+    let streamMode = false;
+    let streamSocket = null;
+    let mediaRecorder = null;
+    let streamRetryTimer = null;
+    let streamGeneration = 0;
+    let streamFailures = 0;
+    let streamFinalWords = [];
     let lastSpeechAt = 0;
     let lastTranscriptText = "";
     let microphoneStream = null;
@@ -545,7 +608,8 @@
         if (!voiceRequested) return;
         voiceRequested = false;
         voiceButton.textContent = "Start voice follow";
-        if (voiceRunning) recognition.abort();
+        if (streamMode) stopStream();
+        else if (voiceRunning) recognition.abort();
         releaseMicrophone();
         voiceMessage("The microphone stopped. Check Chrome's microphone setting, then click Start again.", true);
       });
@@ -683,6 +747,111 @@
       }, delay);
     }
 
+    function resetSpeechTracking() {
+      latestHeard = [];
+      voiceAnchor = Math.max(0, currentGlobalIndex());
+      transcriptOffset = 0;
+      transcriptPrefix = "";
+      speechRun = false;
+      furthestMatched = voiceAnchor - 1;
+    }
+
+    function stopStream() {
+      clearTimeout(streamRetryTimer);
+      streamRetryTimer = null;
+      streamGeneration++;
+      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+      mediaRecorder = null;
+      const socket = streamSocket;
+      streamSocket = null;
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+      streamMode = false;
+      voiceRunning = false;
+    }
+
+    function startStream() {
+      if (!voiceRequested || !streamMode || streamSocket || !streamConfig) return;
+      if (!window.MediaRecorder || !window.WebSocket) {
+        voiceRequested = false;
+        releaseMicrophone();
+        voiceButton.textContent = "Start voice follow";
+        voiceMessage("This browser cannot capture streaming audio. Use browser speech or a current Chrome version.", true);
+        return;
+      }
+      resetSpeechTracking();
+      streamFinalWords = [];
+      const generation = ++streamGeneration;
+      let socket;
+      try { socket = new WebSocket(streamConfig.url, ["tellyprompt", streamConfig.code]); }
+      catch (error) {
+        voiceMessage(`Could not open the streaming service: ${error.message}`, true);
+        return;
+      }
+      streamSocket = socket;
+      voiceMessage("Connecting to the streaming transcription service…");
+      socket.onmessage = event => {
+        if (generation !== streamGeneration || streamSocket !== socket) return;
+        let message;
+        try { message = JSON.parse(event.data); } catch (_) { return; }
+        if (message.type === "Ready") {
+          try {
+            const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
+              .find(type => MediaRecorder.isTypeSupported(type));
+            if (!mimeType) throw new Error("No supported microphone recording format.");
+            mediaRecorder = new MediaRecorder(microphoneStream, { mimeType });
+            let sendQueue = Promise.resolve();
+            mediaRecorder.ondataavailable = audio => {
+              if (!audio.data.size) return;
+              sendQueue = sendQueue.then(async () => {
+                const bytes = await audio.data.arrayBuffer();
+                if (socket.readyState === WebSocket.OPEN && socket.bufferedAmount < 4 * 1024 * 1024) socket.send(bytes);
+              }).catch(() => socket.close());
+            };
+            mediaRecorder.start(250);
+            voiceRunning = true;
+            lastSpeechAt = Date.now();
+            lastTranscriptText = "";
+            voiceMessage("Listening through streaming transcription… words and rows follow your speech.");
+          } catch (error) {
+            voiceMessage(`Streaming audio could not start: ${error.message}`, true);
+            socket.close();
+          }
+        } else if (message.type === "Results") {
+          const spoken = message.channel?.alternatives?.[0]?.transcript || "";
+          const words = spoken.split(/\s+/).map(cleanWord).filter(Boolean);
+          if (message.is_final) streamFinalWords.push(...words);
+          if (words.length) streamFailures = 0;
+          followHeardWords(streamFinalWords.concat(message.is_final ? [] : words));
+        } else if (message.type === "Error") {
+          if (message.fatal) {
+            voiceRequested = false;
+            stopStream();
+            releaseMicrophone();
+            voiceButton.textContent = "Start voice follow";
+            localSpeechButton.disabled = localSpeech;
+          }
+          voiceMessage(message.message || "Streaming transcription disconnected.", true);
+        }
+      };
+      socket.onclose = () => {
+        if (generation !== streamGeneration || streamSocket !== socket) return;
+        const hadAudioSession = voiceRunning;
+        streamSocket = null;
+        if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+        mediaRecorder = null;
+        voiceRunning = false;
+        if (!voiceRequested || !streamMode) return;
+        const delay = Math.min(12000, 1000 * 2 ** Math.min(streamFailures++, 4));
+        voiceMessage(hadAudioSession
+          ? `Streaming service disconnected. Mic stays on; reconnecting in ${Math.ceil(delay / 1000)} seconds.`
+          : `Could not connect to streaming. Check the service URL, access code, and ALLOWED_ORIGIN. Retrying in ${Math.ceil(delay / 1000)} seconds.`, true);
+        streamRetryTimer = window.setTimeout(() => {
+          streamRetryTimer = null;
+          if (generation === streamGeneration) startStream();
+        }, delay);
+      };
+    }
+
     localSpeechButton.addEventListener("click", async () => {
       localSpeechButton.disabled = true;
       const enabled = await prepareLocalSpeech(true);
@@ -710,12 +879,7 @@
       if (!voiceRequested || !recognition || voiceRunning) return;
       clearTimeout(retryTimer);
       retryTimer = null;
-      latestHeard = [];
-      voiceAnchor = Math.max(0, currentGlobalIndex());
-      transcriptOffset = 0;
-      transcriptPrefix = "";
-      speechRun = false;
-      furthestMatched = voiceAnchor - 1;
+      resetSpeechTracking();
       try {
         recognitionGeneration++;
         recognitionStartedAt = Date.now();
@@ -735,6 +899,33 @@
       }
     }
 
+    function followHeardWords(words) {
+      latestHeard = words;
+      const transcriptText = latestHeard.join(" ");
+      if (transcriptText !== lastTranscriptText) {
+        lastSpeechAt = Date.now();
+        lastTranscriptText = transcriptText;
+        networkFailures = 0;
+      }
+      if (latestHeard.length) voiceMessage(`Listening${streamMode ? " via stream" : ""} · heard: ${latestHeard.slice(-7).join(" ")}`);
+      if (latestHeard.slice(0, transcriptOffset).join("\u0000") !== transcriptPrefix) {
+        transcriptOffset = 0;
+        transcriptPrefix = "";
+        speechRun = false;
+      }
+      const { matched, consumed, run } = matchSpeech(latestHeard.slice(transcriptOffset), speechRun);
+      speechRun = run;
+      if (matched <= furthestMatched) return;
+      furthestMatched = matched;
+      voiceAnchor = matched + 1;
+      transcriptOffset += consumed;
+      transcriptPrefix = latestHeard.slice(0, transcriptOffset).join("\u0000");
+      const target = flatWords[matched];
+      if (!target || target.row < activeIndex) return;
+      if (target.row !== activeIndex) activate(target.row, true, true, true);
+      setWord(target.word);
+    }
+
     if (recognition) {
       recognition.continuous = true;
       recognition.interimResults = true;
@@ -745,39 +936,9 @@
         voiceMessage(`Listening${localSpeech ? " on device" : " through Chrome's speech service"}… words and rows follow your speech.`);
       };
       recognition.onresult = (event) => {
-        latestHeard = Array.from(event.results, result => result[0].transcript)
-          .join(" ").split(/\s+/).map(cleanWord).filter(Boolean);
-        const transcriptText = latestHeard.join(" ");
-        if (transcriptText !== lastTranscriptText) {
-          lastSpeechAt = Date.now();
-          lastTranscriptText = transcriptText;
-          networkFailures = 0;
-        }
-        if (latestHeard.length) voiceMessage(`Listening · heard: ${latestHeard.slice(-7).join(" ")}`);
-        // Chrome can replace interim text or drop old result segments. Begin
-        // at the new transcript when the part already read has changed.
-        if (latestHeard.slice(0, transcriptOffset).join("\u0000") !== transcriptPrefix) {
-          transcriptOffset = 0;
-          transcriptPrefix = "";
-          speechRun = false;
-        }
-        const { matched, consumed, run } = matchSpeech(latestHeard.slice(transcriptOffset), speechRun);
-        speechRun = run;
-        if (matched <= furthestMatched) return;
-        furthestMatched = matched;
-        voiceAnchor = matched + 1;
-        transcriptOffset += consumed;
-        transcriptPrefix = latestHeard.slice(0, transcriptOffset).join("\u0000");
-        const target = flatWords[matched];
-        if (!target || target.row < activeIndex) return;
-        if (target.row !== activeIndex) activate(target.row, true, true, true);
-        setWord(target.word);
+        followHeardWords(Array.from(event.results, result => result[0].transcript)
+          .join(" ").split(/\s+/).map(cleanWord).filter(Boolean));
       };
-      window.setInterval(() => {
-        if (voiceRequested && voiceRunning && Date.now() - lastSpeechAt > 10000) {
-          voiceMessage("No new words from Chrome for 10 seconds. If you are speaking, check the Mic level; voice recognition may have stalled.", true);
-        }
-      }, 2000);
       recognition.onerror = (event) => {
         recognitionError = event.error;
         if (event.error === "network") {
@@ -857,9 +1018,15 @@
         }
       };
     } else {
-      voiceButton.disabled = true;
-      voiceMessage("Chrome speech recognition is unavailable here. Use ← / → to follow words.", true);
+      voiceButton.disabled = !streamConfig;
+      if (!streamConfig) voiceMessage("Chrome speech recognition is unavailable here. Configure streaming transcription or use the step controls.", true);
     }
+
+    window.setInterval(() => {
+      if (voiceRequested && voiceRunning && Date.now() - lastSpeechAt > 10000) {
+        voiceMessage(`No new words from ${streamMode ? "the streaming service" : "Chrome"} for 10 seconds. If you are speaking, check the Mic level; recognition may have stalled.`, true);
+      }
+    }, 2000);
 
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && resumeOnVisible && voiceRequested) {
@@ -874,9 +1041,11 @@
         voiceRequested = false;
         resumeOnVisible = false;
         recognitionGeneration++;
-        if (voiceRunning) recognition.abort();
+        if (streamMode) stopStream();
+        else if (voiceRunning) recognition.abort();
         releaseMicrophone();
         voiceButton.textContent = "Start voice follow";
+        localSpeechButton.disabled = localSpeech;
         voiceMessage("Voice follow stopped. Use ← / → to follow words.");
       } else {
         if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) {
@@ -898,9 +1067,16 @@
         rapidEnds = 0;
         networkFailures = 0;
         voiceButton.textContent = "Stop voice follow";
-        await prepareLocalSpeech(false);
-        voiceMessage(`Starting ${localSpeech ? "on-device" : "Chrome"} speech recognition… If Chrome asks, choose 'Allow while visiting the site'.`);
-        startVoice();
+        streamMode = !!streamConfig;
+        localSpeechButton.disabled = streamMode || localSpeech;
+        if (streamMode) {
+          voiceMessage("Starting streaming transcription…");
+          startStream();
+        } else {
+          await prepareLocalSpeech(false);
+          voiceMessage(`Starting ${localSpeech ? "on-device" : "Chrome"} speech recognition… If Chrome asks, choose 'Allow while visiting the site'.`);
+          startVoice();
+        }
       }
     });
 
