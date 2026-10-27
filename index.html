@@ -227,7 +227,6 @@
     let rows = [];
     let wordsByRow = [];
     let flatWords = [];
-    let rowEnds = [];
     let activeIndex = 0;
     let wordIndex = 0;
     let currentScript = script;
@@ -395,11 +394,9 @@
         container.append(row);
         return row;
       });
-      let totalWords = 0;
       flatWords = wordsByRow.flatMap((words, row) => words.map((element, word) => ({
         row, word, text: cleanWord(element.textContent)
       })));
-      rowEnds = wordsByRow.map(words => (totalWords += words.length) - 1);
       activeIndex = 0;
       activate(0, false, center);
     }
@@ -448,7 +445,6 @@
     let transcriptOffset = 0;
     let latestHeard = [];
     let furthestMatched = -1;
-    let autoAdvanceTimer = null;
     let recognitionGeneration = 0;
     let recognitionStartedAt = 0;
     let rapidEnds = 0;
@@ -486,7 +482,7 @@
     }
 
     function cleanWord(text) {
-      return text.toLocaleLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
+      return text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
     }
 
     function releaseMicrophone() {
@@ -542,10 +538,34 @@
 
     function anchorVoice() {
       if (!voiceRequested) return;
-      clearTimeout(autoAdvanceTimer);
       voiceAnchor = Math.max(0, currentGlobalIndex());
       transcriptOffset = latestHeard.length;
       furthestMatched = voiceAnchor - 1;
+    }
+
+    function matchSpeech(words) {
+      let cursor = voiceAnchor;
+      for (let heard = 0; heard < words.length && cursor < flatWords.length; heard++) {
+        const atRowStart = cursor > 0 && flatWords[cursor].row !== flatWords[cursor - 1].row;
+        if (words[heard] === flatWords[cursor].text) {
+          // A row change needs the next spoken word too. A stray common word
+          // must not move the highlight into another section.
+          if (atRowStart && words[heard + 1] !== flatWords[cursor + 1]?.text) continue;
+          cursor++;
+          continue;
+        }
+        // Recover from a few omitted or misheard words only when two adjacent
+        // script words are heard together. Ignore unrelated speech entirely.
+        for (let candidate = cursor + 1; candidate < Math.min(cursor + 4, flatWords.length - 1); candidate++) {
+          if (words[heard] !== flatWords[candidate].text ||
+              words[heard + 1] !== flatWords[candidate + 1].text ||
+              flatWords[candidate].row !== flatWords[candidate + 1].row) continue;
+          cursor = candidate + 2;
+          heard++;
+          break;
+        }
+      }
+      return cursor - 1;
     }
 
     function startVoice() {
@@ -578,28 +598,13 @@
           .join(" ").split(/\s+/).map(cleanWord).filter(Boolean);
         if (latestHeard.length) voiceMessage(`Listening · heard: ${latestHeard.slice(-7).join(" ")}`);
         if (latestHeard.length < transcriptOffset) transcriptOffset = latestHeard.length;
-        let cursor = voiceAnchor;
-        for (const token of latestHeard.slice(transcriptOffset)) {
-          let found = -1;
-          for (let i = cursor; i < Math.min(cursor + 8, flatWords.length); i++) {
-            if (flatWords[i].text === token) { found = i; break; }
-          }
-          if (found >= 0) cursor = found + 1;
-        }
-        const matched = cursor - 1;
+        const matched = matchSpeech(latestHeard.slice(transcriptOffset));
         if (matched <= furthestMatched) return;
         furthestMatched = matched;
         const target = flatWords[matched];
         if (!target || target.row < activeIndex) return;
-        clearTimeout(autoAdvanceTimer);
         if (target.row !== activeIndex) activate(target.row, true, true, true);
         setWord(target.word);
-        if (matched === rowEnds[activeIndex] && activeIndex < rows.length - 1) {
-          const finishedRow = activeIndex;
-          autoAdvanceTimer = setTimeout(() => {
-            if (voiceRequested && activeIndex === finishedRow) activate(finishedRow + 1, true, true, true);
-          }, 550);
-        }
       };
       recognition.onerror = (event) => {
         if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(event.error)) {
@@ -648,7 +653,6 @@
       if (voiceRequested) {
         voiceRequested = false;
         recognitionGeneration++;
-        clearTimeout(autoAdvanceTimer);
         if (voiceRunning) recognition.abort();
         releaseMicrophone();
         voiceButton.textContent = "Start voice follow";
